@@ -83,6 +83,8 @@ def desktop_lease(ttl: int = 60) -> dict:
 def desktop_action(lease_id: str, action: dict, observe_after: bool = False) -> list:
     """Invoke dispatch is unconfirmed (verified=false); verify effects with wait_for. Offscreen Invoke fails.
     Keyboard selector+replace verifies Value Pattern; mismatch means input_sent, never replay blindly.
+    Drag/keyboard wait for exit from move/size and stable bounds; no-selector keyboard stays unverified.
+    Console launch may report window_correlation=new_terminal_window_heuristic for a new Terminal host.
     Execute one action. No screenshot unless observe_after=true.
     Use window_id for physical input. set_value uses a UIA selector inside that window.
     click_text uses exact text plus optional role; ambiguous selectors fail.

@@ -283,6 +283,34 @@ def descendants(snapshot,known):
         known=expanded
 
 
+def console_executable(path):
+    """Read PE subsystem rather than guessing from application names or arguments."""
+    try:
+        with open(path,'rb') as stream:
+            if stream.read(2)!=b'MZ': return False
+            stream.seek(0x3c); offset=int.from_bytes(stream.read(4),'little')
+            if offset>16*1024*1024: return False
+            stream.seek(offset)
+            if stream.read(4)!=b'PE\0\0': return False
+            stream.seek(offset+24+68)
+            return stream.read(2)==b'\x03\x00'
+    except (OSError,TypeError): return False
+
+
+def terminal_window(rows,before,desktop):
+    """Conservative heuristic: only one newly created, active Terminal host."""
+    existing={row['id'] for row in before}
+    candidates=[]
+    for row in rows:
+        if row['id'] in existing: continue
+        name=C.create_unicode_buffer(256)
+        desktop.u.GetClassNameW(row['id'],name,len(name))
+        if name.value=='CASCADIA_HOSTING_WINDOW_CLASS' and desktop.process_name(row['id'])=='windowsterminal.exe':
+            pid=W.DWORD();desktop.u.GetWindowThreadProcessId(row['id'],C.byref(pid))
+            candidates.append((row,pid.value))
+    return candidates[0] if len(candidates)==1 and candidates[0][0]["active"] else None
+
+
 def choose_window(rows,before,known,expected,desktop,allow_unchanged_active=False):
     before_active={w['id'] for w in before if w['active']};before_ids={w['id'] for w in before}
     eligible=[]
@@ -323,12 +351,18 @@ def launch(spec,desktop):
     before=desktop.windows();root=dispatch(spec)
     pid=root['process_id'];known={pid} if pid else set()
     expected=os.path.basename(root.get('expected_executable') or '').lower() or None
+    console=console_executable(root.get("resolved_path"))
     started=time.monotonic();deadline=started+spec['timeout']
     while True:
         snapshot=processes();known=descendants(snapshot,known)
         now=time.monotonic()
         delegated=now-started>=.2 and (not pid or pid not in snapshot)
-        match=choose_window(desktop.windows(),before,known,expected,desktop,allow_unchanged_active=delegated)
+        rows=desktop.windows()
+        match=choose_window(rows,before,known,expected,desktop,allow_unchanged_active=delegated)
+        correlation="process_or_executable"
+        if not match and console and pid in snapshot:
+            match=terminal_window(rows,before,desktop)
+            correlation="new_terminal_window_heuristic"
         if match:
             row,window_pid=match
             try:window=desktop.focus_window(row['id'])
@@ -341,7 +375,7 @@ def launch(spec,desktop):
             return {**root,'window_id':row['id'],'window':window,'window_process_id':window_pid,
                     'launch_process_elevated':root['elevated'],'elevated':actual,
                     'requested_elevated':spec['elevated'],'reused_window':row['id'] in {w['id'] for w in before},
-                    'foreground_verified':True,'launch_status':'window_ready'}
+                    'foreground_verified':True,'launch_status':'window_ready','window_correlation':correlation}
         if now>=deadline:
             return {**root,'window_id':None,'window_process_id':None,'requested_elevated':spec['elevated'],
                     'reused_window':False,'foreground_verified':False,'launch_status':'started_no_window'}

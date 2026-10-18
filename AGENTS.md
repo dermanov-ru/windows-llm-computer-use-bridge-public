@@ -65,6 +65,12 @@ Never publish tokens, raw desktop screenshots or private field values. For code 
 
 Selector-based keyboard input waits up to 0.8s for enabled, visible, nonempty, stable bounds and continuous keyboard focus (100ms). `replace:true` plus Value Pattern verifies the full untruncated value for 80ms within a 0.6s budget after input. A mismatch returns `ui_element_error` with `input_sent:true`, `verified:false`, `verification:value_mismatch`; later batch steps stop. No text is resent and private values are excluded from errors. Without Value Pattern, `verified:false,verification:not_available`; without replace, caret/selection is unknown so `verification:selection_unknown`. These cases still need explicit application-state verification. Stable UIA focus is a readiness heuristic, not proof the application is ready; automatic verification detects dropped input rather than promising prevention. Existing COM calls can exceed timing budgets.
 
+### Window movement and Windows Terminal
+
+A drag starting at a native caption (`WM_NCHITTEST=HTCAPTION`, bounded query) may finish over its own source HWND as the window follows the pointer. This exception does not apply to content drags or unrelated windows. Initial source/destination hit checks and mouse-button release remain mandatory. After release, drag waits up to 2s for the source GUI thread to leave move/size and mouse capture, plus stable window bounds for 120ms. Keyboard type_text uses the same readiness barrier before sending any text. A timeout stops later batch actions; it does not resend text. Unscoped-to-element keyboard input explicitly returns verified:false, verification:no_selector. It still needs an independent value/readback check.
+
+For a console PE executable (subsystem=Windows CUI), launch_app can correlate a single new active WindowsTerminal.exe/CASCADIA_HOSTING_WINDOW_CLASS window even when Terminal is outside the child-process tree. window_correlation:new_terminal_window_heuristic makes this heuristic explicit. Existing Terminal tabs/windows and multiple newly observed Terminal windows are not guessed; concurrent Terminal launches can remain ambiguous or miscorrelate, so inspect the returned title. No terminal settings are changed. Ordinary token launch remains the default.
+
 ## Linux (X11) differences
 
 - Backend: `linux_backend.py` (EWMH windows, XTest input) and `atspi_backend.py` (AT-SPI2 selectors). Window ids are X11 window ids.

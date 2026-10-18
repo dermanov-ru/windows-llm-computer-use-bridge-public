@@ -193,6 +193,39 @@ def gui_thread_info(thread=0):
     return info if u.GetGUIThreadInfo(thread,C.byref(info)) else None
 
 
+u.SendMessageTimeoutW.argtypes=[W.HWND,W.UINT,W.WPARAM,W.LPARAM,W.UINT,W.UINT,C.POINTER(C.c_size_t)]
+u.SendMessageTimeoutW.restype=W.LPARAM
+
+
+def caption_point(hwnd, x, y):
+    result=C.c_size_t()
+    packed=((int(y)&0xffff)<<16)|(int(x)&0xffff)
+    return bool(u.SendMessageTimeoutW(hwnd,0x84,0,packed,2,200,C.byref(result))) and result.value==2
+
+
+def wait_window_idle(hwnd, timeout=2.0):
+    """Wait for mouse-release processing and exit from the native move/size loop."""
+    deadline=time.monotonic()+timeout
+    stable_since=None; previous=None
+    thread=u.GetWindowThreadProcessId(hwnd,None)
+    if not thread: raise TargetError("Window closed before input readiness check")
+    while True:
+        require_window(hwnd)
+        info=gui_thread_info(thread)
+        if info is None: raise TargetError("Cannot verify target GUI thread readiness")
+        rect=W.RECT()
+        if not u.GetWindowRect(hwnd,C.byref(rect)): raise TargetError("Cannot read target window bounds")
+        bounds=(rect.left,rect.top,rect.right,rect.bottom)
+        now=time.monotonic()
+        ready=not (info.flags & 2) and not info.hwndMoveSize and not info.hwndCapture
+        if ready and bounds==previous:
+            if stable_since is not None and now-stable_since>=0.12: return
+        else: stable_since=now if ready else None
+        previous=bounds if ready else None
+        if now>=deadline: raise TargetError("Window is still moving, sizing or capturing input; inspect before retrying")
+        time.sleep(0.02)
+
+
 def target_at(x, y):
     hwnd = u.WindowFromPoint(W.POINT(int(x), int(y)))
     root = u.GetAncestor(hwnd, 2) if hwnd else None
@@ -391,6 +424,7 @@ def drag(x, y, to_x, to_y, hwnd, target_hwnd, duration_ms=700):
         raise RuntimeError("Cannot move pointer")
     if target_at(x, y)["root_window_id"] != hwnd:
         raise TargetError("Drag source changed before button down")
+    window_move=caption_point(hwnd,x,y)
     # Always attempt release, including failed motion, desktop loss or drop guard.
     try:
         send([INPUT(type=0, mi=MOUSEINPUT(dwFlags=2))])
@@ -407,14 +441,16 @@ def drag(x, y, to_x, to_y, hwnd, target_hwnd, duration_ms=700):
             send([INPUT(type=0, mi=MOUSEINPUT(dx=dx,dy=dy,dwFlags=0xC001))])
             time.sleep(duration_ms / steps / 1000)
         hit = target_at(to_x, to_y)
-        if hit["root_window_id"] != target_hwnd:
+        if hit["root_window_id"] != target_hwnd and not (window_move and hit["root_window_id"]==hwnd):
             # Escape cancels shell drags before releasing at an unexpected target.
             press(["ESC"])
             raise TargetError("Drop target changed; drag cancelled")
         time.sleep(.1)
     finally:
         send([INPUT(type=0, mi=MOUSEINPUT(dwFlags=4))])
-    return {"input_method":"physical_drag", "from":[x,y], "to":[to_x,to_y], "hit":hit}
+    wait_window_idle(hwnd)
+    return {"input_method":"physical_drag", "from":[x,y], "to":[to_x,to_y], "hit":hit,
+            "window_move":window_move, "input_ready":True}
 
 
 def action(a):
@@ -454,6 +490,7 @@ def action(a):
         result.update(ui.set_value(hwnd, a["selector"], a["text"],
                                    append=kind == "type_text" and not a.get("replace", False)))
     elif kind == "type_text":
+        wait_window_idle(hwnd)
         if "selector" in a:
             import uia_backend as ui
             try:
@@ -480,6 +517,9 @@ def action(a):
                 result.update(ui.verify_keyboard(hwnd, a["selector"], a["text"]))
             else:
                 result.update(verified=False, verification="not_available" if initial_value is None else "selection_unknown")
+        if "selector" not in a:
+            result.update(verified=False, verification="no_selector",
+                          guidance="Keyboard packets sent once; target value was not verified")
         result["input_method"] = "keyboard"
     elif kind == "press_keys":
         if hwnd is not None:

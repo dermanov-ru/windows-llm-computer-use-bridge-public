@@ -144,6 +144,7 @@ class RequestTests(unittest.TestCase):
         self.original_action = server.desktop.action
         self.action = patch.object(server.desktop, "action", return_value={"type": "move"}).start()
         patch.object(server.desktop,"require_interactive_desktop").start()
+        patch.object(server.desktop,"wait_window_idle").start()
         patch.object(server.desktop,"active_window",return_value={"id":123,"title":"Test window"}).start()
         self.addCleanup(patch.stopall)
 
@@ -935,7 +936,7 @@ class InputDeliveryTests(unittest.TestCase):
         import uia_backend as ui
         desktop=server.desktop
         for mismatch in (False,True):
-            with self.subTest(mismatch=mismatch), patch.object(desktop,"require_interactive_desktop"), patch.object(desktop,"focus_window"), patch.object(desktop,"require_foreground"), patch.object(desktop,"press") as press, patch.object(desktop,"type_text") as typed, patch.object(ui,"focus_element"), patch.object(ui,"keyboard_value",return_value="old"), patch.object(ui,"selected",return_value=self.row()), patch.object(ui,"verify_keyboard",side_effect=ui.UIError("value mismatch") if mismatch else None,return_value={"verified":True}) as verified:
+            with self.subTest(mismatch=mismatch), patch.object(desktop,"require_interactive_desktop"), patch.object(desktop,"focus_window"), patch.object(desktop,"wait_window_idle"), patch.object(desktop,"require_foreground"), patch.object(desktop,"press") as press, patch.object(desktop,"type_text") as typed, patch.object(ui,"focus_element"), patch.object(ui,"keyboard_value",return_value="old"), patch.object(ui,"selected",return_value=self.row()), patch.object(ui,"verify_keyboard",side_effect=ui.UIError("value mismatch") if mismatch else None,return_value={"verified":True}) as verified:
                 action={"type":"type_text","window_id":1,"selector":{"name":"Search"},"method":"keyboard","replace":True,"text":"wanted","settle_ms":0}
                 if mismatch:
                     with self.assertRaisesRegex(ui.UIError,"mismatch"): desktop.action(action)
@@ -950,6 +951,60 @@ class InputDeliveryTests(unittest.TestCase):
         with patch.object(ui,"selected",return_value=self.row(focused=False)):
             with self.assertRaisesRegex(ui.UIError,"lost focus"):
                 ui.verify_keyboard(1,{"name":"Search"},"wanted")
+
+
+@unittest.skipUnless(sys.platform == "win32", "Window movement and console host tests need Win32")
+class MoveAndTerminalTests(unittest.TestCase):
+    def test_idle_waits_for_release_move_loop_and_stable_bounds(self):
+        from types import SimpleNamespace
+        d=server.desktop
+        states=[SimpleNamespace(flags=2,hwndMoveSize=1,hwndCapture=1),SimpleNamespace(flags=0,hwndMoveSize=0,hwndCapture=0)]
+        def rect(hwnd,pointer):
+            pointer._obj.right=100; pointer._obj.bottom=100; return True
+        with patch.object(d,"require_window"), patch.object(d.u,"GetWindowThreadProcessId",return_value=3), patch.object(d,"gui_thread_info",side_effect=[states[0],states[1],states[1]]), patch.object(d.u,"GetWindowRect",side_effect=rect), patch.object(d.time,"monotonic",side_effect=[0,0,.1,.23]), patch.object(d.time,"sleep"):
+            d.wait_window_idle(1)
+
+    def test_idle_timeout_blocks_typing_without_replay(self):
+        d=server.desktop
+        with patch.object(d,"require_interactive_desktop"), patch.object(d,"focus_window"), patch.object(d,"wait_window_idle",side_effect=d.TargetError("still moving")), patch.object(d,"type_text") as typed:
+            with self.assertRaisesRegex(d.TargetError,"still moving"):
+                d.action({"type":"type_text","window_id":1,"text":"hello","method":"keyboard"})
+        typed.assert_not_called()
+
+    def test_drag_accepts_source_at_drop_only_for_caption(self):
+        d=server.desktop
+        for caption in (True,False):
+            with self.subTest(caption=caption), patch.object(d,"require_window"), patch.object(d,"require_interactive_desktop"), patch.object(d.u,"GetSystemMetrics",side_effect=lambda i:{76:0,77:0,78:1920,79:1080}[i]), patch.object(d,"target_at",side_effect=[{"root_window_id":1},{"root_window_id":2},{"root_window_id":1},{"root_window_id":1}]), patch.object(d,"caption_point",return_value=caption), patch.object(d.u,"SetCursorPos",return_value=True), patch.object(d.time,"sleep"), patch.object(d,"send") as send, patch.object(d,"press") as press, patch.object(d,"wait_window_idle") as idle:
+                if caption:
+                    result=d.drag(100,100,400,200,1,2)
+                    self.assertTrue(result["window_move"]); idle.assert_called_once_with(1);press.assert_not_called()
+                else:
+                    with self.assertRaisesRegex(d.TargetError,"Drop target changed"): d.drag(100,100,400,200,1,2)
+                    idle.assert_not_called();press.assert_called_once_with(["ESC"])
+                self.assertEqual(send.call_args_list[-1].args[0][0].mi.dwFlags,4)
+
+    def test_terminal_requires_new_active_class_and_executable(self):
+        import launcher
+        d=server.desktop
+        def class_name(hwnd,buffer,length): buffer.value='CASCADIA_HOSTING_WINDOW_CLASS';return 27
+        row={"id":99,"active":True}
+        with patch.object(d.u,"GetClassNameW",side_effect=class_name), patch.object(d,"process_name",return_value='windowsterminal.exe'), patch.object(d.u,"GetWindowThreadProcessId"):
+            self.assertIsNotNone(launcher.terminal_window([row],[],d))
+            self.assertIsNone(launcher.terminal_window([row],[row],d))
+            self.assertIsNone(launcher.terminal_window([dict(row,active=False)],[],d))
+            self.assertIsNone(launcher.terminal_window([row,{"id":100,"active":True}],[],d))
+            self.assertIsNone(launcher.terminal_window([row,{"id":100,"active":False}],[],d))
+        with patch.object(d.u,"GetClassNameW",side_effect=class_name), patch.object(d,"process_name",return_value='unrelated.exe'):
+            self.assertIsNone(launcher.terminal_window([row],[],d))
+
+    def test_console_detection_reads_pe_subsystem(self):
+        import launcher
+        with tempfile.TemporaryDirectory() as folder:
+            path=Path(folder)/'sample.exe'
+            for subsystem in (2,3):
+                data=bytearray(256);data[:2]=b'MZ';data[0x3c:0x40]=(64).to_bytes(4,'little');data[64:68]=b'PE\0\0';data[64+24+68:64+24+70]=subsystem.to_bytes(2,'little');path.write_bytes(data)
+                self.assertEqual(launcher.console_executable(str(path)),subsystem==3)
+            path.write_bytes(b'bad');self.assertFalse(launcher.console_executable(str(path)))
 
 
 if __name__ == "__main__":
