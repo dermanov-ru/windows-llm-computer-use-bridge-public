@@ -1,0 +1,120 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Bridge demo — domain lists</title>
+<style>
+  body { font: 15px/1.4 system-ui, sans-serif; margin: 0; background: #f5f6f8; color: #1d2330; }
+  header { background: #26324a; color: #fff; padding: 12px 20px; font-weight: 600; }
+  nav { display: flex; gap: 4px; padding: 10px 20px 0; }
+  nav button { border: 0; padding: 8px 14px; border-radius: 6px 6px 0 0; background: #dde2ea; cursor: pointer; }
+  nav button[aria-selected="true"] { background: #fff; font-weight: 600; }
+  main { background: #fff; margin: 0 20px 20px; padding: 16px; border-radius: 0 6px 6px 6px; }
+  .row { display: flex; gap: 8px; margin-bottom: 12px; }
+  input, select { padding: 7px 9px; border: 1px solid #b8c0cc; border-radius: 5px; font: inherit; }
+  #domInput { flex: 1; } #domFilter { width: 100%; box-sizing: border-box; }
+  .lists { display: grid; grid-template-columns: repeat(2, 1fr); gap: 16px; }
+  ul { list-style: none; padding: 0; margin: 6px 0 0; }
+  li { display: flex; justify-content: space-between; padding: 4px 6px; border-bottom: 1px solid #eef0f3; }
+  li button { border: 0; background: none; color: #b42318; cursor: pointer; }
+  #toast { min-height: 1.4em; color: #1a7f37; }
+</style>
+</head>
+<body>
+<header>Bridge demo — domain lists</header>
+<nav role="tablist">
+  <button role="tab" id="tabDomains" aria-selected="true">Domains</button>
+  <button role="tab" id="tabLog" aria-selected="false">Log</button>
+</nav>
+<main>
+  <section id="pageDomains">
+    <div class="row">
+      <input id="domInput" aria-label="example.com — subdomains included" placeholder="example.com">
+      <select id="domGroup" aria-label="Group">
+        <option value="AUTO">foreign service (via VPN)</option>
+        <option value="CORP">work resource (allow-list)</option>
+        <option value="LOCAL">local site</option>
+        <option value="DIRECT">always direct</option>
+      </select>
+      <button id="btnDom">Add</button>
+    </div>
+    <div class="row"><input id="domFilter" aria-label="Search lists" placeholder="Search lists"></div>
+    <div id="toast" role="status"></div>
+    <div class="lists" id="lists"></div>
+  </section>
+  <section id="pageLog" hidden>
+    <ul id="log" aria-label="Log"></ul>
+  </section>
+</main>
+<script>
+  // Deliberately asynchronous like a real app: rules apply after a delay and
+  // the Add button stays disabled meanwhile.
+  const groups = { AUTO: [], CORP: [], LOCAL: [], DIRECT: [] };
+  const names = { AUTO: "Foreign services", CORP: "Work resources", LOCAL: "Local sites", DIRECT: "Always direct" };
+  const $ = id => document.getElementById(id);
+  function render() {
+    const filter = $("domFilter").value.trim().toLowerCase();
+    $("lists").innerHTML = "";
+    for (const [key, items] of Object.entries(groups)) {
+      const box = document.createElement("div");
+      box.innerHTML = `<strong>${names[key]}</strong>`;
+      const ul = document.createElement("ul");
+      ul.setAttribute("aria-label", names[key]);
+      ul.id = "list" + key;
+      for (const d of items.filter(d => !filter || d.includes(filter))) {
+        const li = document.createElement("li");
+        li.textContent = d;
+        const x = document.createElement("button");
+        x.textContent = "✕";
+        x.onclick = () => remove(key, d);
+        li.append(x);
+        ul.append(li);
+      }
+      box.append(ul);
+      $("lists").append(box);
+    }
+  }
+  function log(text) {
+    const li = document.createElement("li");
+    li.textContent = text;
+    $("log").prepend(li);
+  }
+  function busy(on) { $("btnDom").disabled = on; }
+  function add() {
+    const d = $("domInput").value.trim().toLowerCase();
+    const g = $("domGroup").value;
+    if (!d) return;
+    busy(true);
+    setTimeout(() => {
+      if (!groups[g].includes(d)) groups[g].push(d);
+      log(`added domain ${d} → ${g}`);
+      $("toast").textContent = `Added ${d}`;
+      $("domInput").value = "";
+      render(); busy(false);
+    }, 1500);
+  }
+  function remove(g, d) {
+    busy(true);
+    setTimeout(() => {
+      groups[g] = groups[g].filter(x => x !== d);
+      log(`removed domain ${d}`);
+      $("toast").textContent = `Removed ${d}`;
+      render(); busy(false);
+    }, 1200);
+  }
+  function tab(which) {
+    $("pageDomains").hidden = which !== "domains";
+    $("pageLog").hidden = which !== "log";
+    $("tabDomains").setAttribute("aria-selected", which === "domains");
+    $("tabLog").setAttribute("aria-selected", which === "log");
+  }
+  $("btnDom").onclick = add;
+  $("domFilter").oninput = render;
+  $("tabDomains").onclick = () => tab("domains");
+  $("tabLog").onclick = () => tab("log");
+  for (const d of ["example.org", "example.net", "docs.example.com"]) groups.AUTO.push(d);
+  groups.DIRECT.push("intranet.example");
+  render();
+</script>
+</body>
+</html>

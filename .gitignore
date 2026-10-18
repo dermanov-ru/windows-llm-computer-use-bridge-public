@@ -1,0 +1,15 @@
+.venv/
+access.token
+*.log
+__pycache__/
+*.png
+*.jpg
+*.jpeg
+acceptance-output/
+admin-launch-status.json
+admin-test-result.json
+demo-result.txt
+access.token.*
+.env
+mcp.local.json
+!docs/media/*

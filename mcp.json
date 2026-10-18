@@ -1,0 +1,12 @@
+{
+  "mcpServers": {
+    "windows_desktop": {
+      "command": "/ABSOLUTE/PATH/windows-desktop-bridge/.venv/bin/python",
+      "args": ["/ABSOLUTE/PATH/windows-desktop-bridge/mcp_adapter.py"],
+      "env": {
+        "DESKTOP_BRIDGE_URL": "http://127.0.0.1:18765",
+        "DESKTOP_BRIDGE_TOKEN_FILE": "/ABSOLUTE/PATH/secure/access.token"
+      }
+    }
+  }
+}
